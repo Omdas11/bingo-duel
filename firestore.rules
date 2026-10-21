@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============ missile.io (existing, unchanged) ============
+
+    // One doc per run, created when a run starts. startedAt is server-set,
+    // so nobody can backdate a run to fake a longer play time.
+    match /runs/{runId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.startedAt == request.time
+        && request.resource.data.difficulty is string;
+      allow update, delete: if false;
+    }
+
+    // Leaderboard entry, single-use per run (doc id == run id, no updates).
+    // The score must be earnable in the wall-clock time since the run
+    // started: at most 100 pts/sec (above the game's theoretical max of
+    // ~89 pts/sec), so faking a score takes as long as earning it.
+    // (Expressed as duration <= duration with the /100 folded into the
+    // integer side as *10 ms: duration * number is not valid in rules.)
+    match /leaderboard/{runId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.runId == runId
+        && request.resource.data.score is int
+        && request.resource.data.score >= 0
+        && exists(/databases/$(database)/documents/runs/$(runId))
+        && get(/databases/$(database)/documents/runs/$(runId)).data.uid == request.auth.uid
+        && duration.value(request.resource.data.score * 10, 'ms')
+             <= (request.time - get(/databases/$(database)/documents/runs/$(runId)).data.startedAt);
+      allow update, delete: if false;
+    }
+
+    // ============ Bingo Duel ============
+
+    // Game rooms: any signed-in player can create/join/play.
+    match /bingo_rooms/{code} {
+      allow read, write: if request.auth != null;
+      match /claims/{claimId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+
+    // Stats: anyone signed in can read; only the owner can write their own.
+    match /bingo_stats/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
